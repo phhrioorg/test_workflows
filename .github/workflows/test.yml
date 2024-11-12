@@ -1,0 +1,19 @@
+# Source Repo: .github/workflows/reusable-workflow.yml
+name: Reusable Workflow
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+      - name: Run Build
+        run: echo "Running build in ${{ inputs.environment }} environment"
