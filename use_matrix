@@ -1,0 +1,182 @@
+name: Test and deploy to AWS
+
+on:
+  push:
+    branches: [ NOTmain ]
+    paths-ignore:
+      - '.github/workflows/codeql.yml'
+      - '.github/dependabot.yml'
+      - 'build/**'
+      - 'examples/**'
+      - '**.md'
+
+
+permissions:
+      id-token: write   # This is required for requesting the JWT for AWS authentication
+      contents: read    # This is required for actions/checkout
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        include:
+          - environment: dev-aws
+            SERVICE_DOMAIN: sso-service.dev.security.gov.uk
+            TF_WORKSPACE: nonprod
+            AWS_REGION: eu-west-2
+          - environment: staging-aws
+            SERVICE_DOMAIN: sso-service.staging.security.gov.uk
+            TF_WORKSPACE: nonprod
+            AWS_REGION: eu-west-2
+          - environment: prod-aws
+            SERVICE_DOMAIN: sso-service.service.security.gov.uk
+            TF_WORKSPACE: prod
+            AWS_REGION: eu-west-2
+    environment:
+      name: ${{ matrix.environment }}
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main
+
+      - name: Read .terraform-version file
+        run: |
+          TV=$(cat main/terraform/.terraform-version | tr -d [:space:])
+          echo "terraform_version=${TV}"
+          echo "terraform_version=${TV}" >> $GITHUB_OUTPUT
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.terraform_version }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' 
+          
+      - name: Show me files
+        run: ls -lah
+
+      - name: Build and test viewer-request
+        env:
+          AWS_CLOUDFRONT_KEY: ${{ secrets.AWS_CLOUDFRONT_KEY }}
+        run: |
+          cd main/
+          chmod +x build/*.sh
+          bash build/test_viewer-request.sh
+
+      - name: Build and test viewer-response
+        run: |
+          cd main/
+          chmod +x build/*.sh
+          bash build/test_viewer-response.sh
+
+      - name: Build and test Flask app
+        env:
+          AWS_CLOUDFRONT_KEY: ${{ secrets.AWS_CLOUDFRONT_KEY }}
+        run: |
+          cd main/
+          chmod +x build/*.sh
+          python -V
+          bash build/build_lambda.sh
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE }}
+          aws-region: ${{ matrix.AWS_REGION }}
+
+      - name: Test IAM credentials
+        run: aws sts get-caller-identity
+
+      - name: Apply Terraform
+        env:
+          AWS_CLOUDFRONT_KEY: ${{ secrets.AWS_CLOUDFRONT_KEY }}
+          AWS_REGION: ${{ matrix.AWS_REGION }}
+          TF_WORKSPACE: ${{ matrix.TF_WORKSPACE }}
+        run: |
+          cd main/
+          chmod +x build/*.sh
+          bash build/test_viewer-request.sh
+          bash build/test_viewer-response.sh
+          bash build/build_lambda.sh
+          cd terraform/
+          terraform workspace show
+          terraform init
+          terraform apply -auto-approve
+
+      - name: Deploy S3 assets
+        env:
+          S3_ASSET_BUCKET: ${{ matrix.SERVICE_DOMAIN }}
+          AWS_REGION: ${{ matrix.AWS_REGION }}
+        run: |
+          cd main/
+          aws s3 cp assets/ "s3://${S3_ASSET_BUCKET}/assets/" --recursive
+
+      - name: Check deployed URLs
+        env:
+          SERVICE_DOMAIN: ${{ matrix.SERVICE_DOMAIN }}
+          TEST_CLIENT_ID: ${{ secrets.TEST_CLIENT_ID }}
+        run: |
+          echo "Checking CloudFront status"
+          curl -v "https://${SERVICE_DOMAIN}/.well-known/status" \
+            --connect-timeout 10 --max-redirs 0 --silent --stderr - > .cfstatus.txt
+          egrep -i '< HTTP/[0123\.]+ 200' .cfstatus.txt
+          egrep -i "OK" .cfstatus.txt
+
+          echo "Checking Lambda status"
+          curl -v "https://${SERVICE_DOMAIN}/internal/health" \
+            --connect-timeout 10 --max-redirs 0 --silent --stderr - > .lstatus.txt
+          egrep -i '< HTTP/[0123\.]+ 200' .lstatus.txt
+          egrep -i "IMOK" .lstatus.txt
+
+          echo "Checking OIDC status"
+          curl -v "https://${SERVICE_DOMAIN}/.well-known/openid-configuration" \
+            --connect-timeout 10 --max-redirs 0 --silent --stderr - > .oidc.txt
+          egrep -i '< HTTP/[0123\.]+ 200' .oidc.txt
+          egrep -i "\"issuer\":\s*\"https://${SERVICE_DOMAIN}\"" .oidc.txt
+
+          echo "Checking '/' is public"
+          curl -v "https://${SERVICE_DOMAIN}/" \
+            --connect-timeout 10 --max-redirs 0 --silent --stderr - > .www-status.txt
+          egrep -i '< HTTP/[0123\.]+ 200' .www-status.txt
+          egrep -i "<script src=\"https://${SERVICE_DOMAIN}/assets/init.js\">" .www-status.txt
+
+          echo "Checking '/dashboard' is private and requires auth"
+          curl -v "https://${SERVICE_DOMAIN}/dashboard" \
+            --connect-timeout 10 --max-redirs 0 --silent --stderr - > .priv-status.txt
+          egrep -i '< HTTP/[0123\.]+ 30[0-9]' .priv-status.txt
+          grep '< location: /sign-in' .priv-status.txt
+
+          echo "Checking JWKs status"
+          curl -v "https://${SERVICE_DOMAIN}/.well-known/jwks.json" \
+            --connect-timeout 10 --max-redirs 0 --silent --stderr - > .jwks.txt
+          egrep -i '< HTTP/[0123\.]+ 200' .jwks.txt
+          egrep -i "\"kid\":\s*\"[a-z]+\-[a-z0-9]+\"" .jwks.txt
+
+          echo "Checking /auth/token"
+          curl -v "https://${SERVICE_DOMAIN}/auth/token" \
+            --connect-timeout 10 --max-redirs 0 --silent --stderr - > .authtoken.txt
+          egrep -i '< HTTP/[0123\.]+ 400' .authtoken.txt
+
+          echo "Checking /auth/profile"
+          curl -v "https://${SERVICE_DOMAIN}/auth/profile" \
+            --connect-timeout 10 --max-redirs 0 --silent --stderr - > .authprofile.txt
+          egrep -i '< HTTP/[0123\.]+ 200' .authprofile.txt
+          egrep -i "\"sub\":\s*null" .authprofile.txt
+
+          echo "Checking /auth/oidc failure"
+          curl -v "https://${SERVICE_DOMAIN}/auth/oidc" \
+            --connect-timeout 10 --max-redirs 0 --silent --stderr - > .authoidc.txt
+          egrep -i '< HTTP/[0123\.]+ 30[0-9]' .authoidc.txt
+          grep '< location: /error?type=response_type-not-set' .authoidc.txt
+
+          echo "Checking /auth/oidc semi-success"
+          curl -v "https://${SERVICE_DOMAIN}/auth/oidc?response_type=code&client_id=${TEST_CLIENT_ID}" \
+            --connect-timeout 10 --max-redirs 0 --silent --stderr - > .authoidc2.txt
+          egrep -i '< HTTP/[0123\.]+ 30[0-9]' .authoidc2.txt
+          grep "< location: /sign-in?to_app=${TEST_CLIENT_ID}" .authoidc2.txt
