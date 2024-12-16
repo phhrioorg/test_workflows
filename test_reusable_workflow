@@ -1,0 +1,18 @@
+# Your Repo: .github/workflows/call-reusable-workflow.yml
+name: Call Reusable Workflow
+
+on:
+  push:
+    branches: [ feature-dev ]
+    paths:
+      - '.github/workflows/test.yml'
+
+jobs:
+  call-reusable:
+    uses: phhrioorg/test_workflows/.github/workflows/test.yml@main
+    with:
+      environment: "dev"
+      config-path: .github/labeler.yml
+    secrets:
+      MY_SECRET: ${{ secrets.MY_SECRET }}
+      personal_access_token: ${{ secrets.token }}
