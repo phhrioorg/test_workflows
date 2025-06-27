@@ -28,7 +28,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          repository: 'co-cddo/gc3-terraform-module-monitoring'
+          repository: 'terraform-module-monitoring'
           ref: 'main'
           path: 'monitoring'
 #          ref: 'basic-monitoring'
