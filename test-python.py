@@ -66,7 +66,7 @@ def lambda_handler(event, context):
     oidc_data = json.loads(b64decode(raw_oidc_data.split(".")[1].encode()))
     email = oidc_data["email"]
 
-    if not email.endswith("@digital.cabinet-office.gov.uk"):
+    if not email.endswith("@gmail.com"):
         return ret401()
 
     access_token = event["headers"]["x-amzn-oidc-accesstoken"]
