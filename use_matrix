@@ -24,15 +24,15 @@ jobs:
       matrix:
         include:
           - environment: dev-aws
-            SERVICE_DOMAIN: sso-service.dev.security.gov.uk
+            SERVICE_DOMAIN: phh.dev
             TF_WORKSPACE: nonprod
             AWS_REGION: eu-west-2
           - environment: staging-aws
-            SERVICE_DOMAIN: sso-service.staging.security.gov.uk
+            SERVICE_DOMAIN: phh.staging
             TF_WORKSPACE: nonprod
             AWS_REGION: eu-west-2
           - environment: prod-aws
-            SERVICE_DOMAIN: sso-service.service.security.gov.uk
+            SERVICE_DOMAIN: phh.prod
             TF_WORKSPACE: prod
             AWS_REGION: eu-west-2
     environment:
